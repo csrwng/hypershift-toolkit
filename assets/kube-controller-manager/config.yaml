@@ -9,6 +9,8 @@ extendedArguments:
   - 'true'
   cert-dir:
   - "/var/run/kubernetes"
+  cluster-name:
+  - ht01
   cluster-cidr:
   - {{ .PodCIDR }}
   cluster-signing-cert-file:

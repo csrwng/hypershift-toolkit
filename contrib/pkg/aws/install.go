@@ -48,7 +48,7 @@ const (
 	routerNodePortHTTP    = 31080
 	routerNodePortHTTPS   = 31443
 	externalOauthPort     = 8443
-	workerMachineSetCount = 3
+	workerMachineSetCount = 2
 )
 
 var (
