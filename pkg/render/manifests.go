@@ -72,7 +72,7 @@ func (c *clusterManifestContext) setupManifests(etcd bool, autoApprover bool, vp
 		c.registry()
 	}
 	c.userManifestsBootstrapper()
-	c.caOperator()
+	c.controlPlaneOperator()
 }
 
 func (c *clusterManifestContext) etcd() {
@@ -190,9 +190,9 @@ func (c *clusterManifestContext) openshiftControllerManager() {
 	)
 }
 
-func (c *clusterManifestContext) caOperator() {
+func (c *clusterManifestContext) controlPlaneOperator() {
 	c.addManifestFiles(
-		"ca-operator/ca-operator-deployment.yaml",
+		"control-plane-operator/cp-operator-deployment.yaml",
 	)
 }
 

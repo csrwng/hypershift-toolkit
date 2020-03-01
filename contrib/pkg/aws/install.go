@@ -385,6 +385,7 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 	params.RouterNodePortHTTPS = fmt.Sprintf("%d", routerNodePortHTTPS)
 	params.RouterServiceType = "NodePort"
 	params.Replicas = "1"
+	params.ControlPlaneOperatorControllers = []string{}
 
 	workingDir, err := ioutil.TempDir("", "")
 	if err != nil {
