@@ -1,4 +1,4 @@
-package aws
+package generic
 
 import (
 	crand "crypto/rand"
@@ -92,12 +92,6 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 	if err != nil {
 		return fmt.Errorf("failed to obtain a kubernetes client from existing configuration: %v", err)
 	}
-	awsKey, awsSecretKey, err := getAWSCredentials(client)
-	if err != nil {
-		return fmt.Errorf("failed to obtain AWS credentials from host cluster: %v", err)
-	}
-	log.Debugf("AWS key: %s, secret: %s", awsKey, awsSecretKey)
-
 	if releaseImage == "" {
 		releaseImage, err = getReleaseImage(dynamicClient)
 		if err != nil {
@@ -111,27 +105,9 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 	}
 	log.Debugf("The pull secret is: %v", pullSecret)
 
-	infraName, region, err := getInfrastructureInfo(dynamicClient)
-	if err != nil {
-		return fmt.Errorf("failed to obtain infrastructure info for cluster: %v", err)
-	}
-	log.Debugf("The management cluster infra name is: %s", infraName)
-	log.Debugf("The management cluster AWS region is: %s", region)
-
 	serviceCIDR, podCIDR, err := getNetworkInfo(dynamicClient)
 	if err != nil {
 		return fmt.Errorf("failed to obtain network info for cluster: %v", err)
-	}
-
-	dnsZoneID, parentDomain, err := getDNSZoneInfo(dynamicClient)
-	if err != nil {
-		return fmt.Errorf("failed to obtain public zone information: %v", err)
-	}
-	log.Debugf("Using public DNS Zone: %s and parent suffix: %s", dnsZoneID, parentDomain)
-
-	machineNames, err := getMachineNames(dynamicClient)
-	if err != nil {
-		return fmt.Errorf("failed to fetch machine names for cluster: %v", err)
 	}
 
 	// Start creating resources on management cluster
@@ -163,180 +139,31 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 
 	// Create Kube APIServer service
 	log.Infof("Creating Kube API service")
-	apiNodePort, err := createKubeAPIServerService(client, name)
+	apiService, err := createKubeAPIServerService(client, name)
 	if err != nil {
 		return fmt.Errorf("failed to create kube apiserver service: %v", err)
 	}
-	log.Infof("Created Kube API service with NodePort %d", apiNodePort)
+	log.Infof("Created Kube API service %s/%s", apiService.Namespace, apiService.Name)
 
 	log.Infof("Creating VPN service")
-	vpnNodePort, err := createVPNServerService(client, name)
+	vpnService, err := createVPNServerService(client, name)
 	if err != nil {
 		return fmt.Errorf("failed to create vpn server service: %v", err)
 	}
-	log.Infof("Created VPN service with NodePort %d", vpnNodePort)
+	log.Infof("Created VPN service %s/%s", vpnService.Namespace, vpnService.Name)
 
 	log.Infof("Creating Openshift API service")
-	openshiftClusterIP, err := createOpenshiftService(client, name)
+	openshiftService, err := createOpenshiftService(client, name)
 	if err != nil {
 		return fmt.Errorf("failed to create openshift server service: %v", err)
 	}
-	log.Infof("Created Openshift API service with cluster IP: %s", openshiftClusterIP)
+	log.Infof("Created Openshift API service %s/%s", openshiftService.Namespace, openshiftService.Name)
 
-	oauthNodePort, err := createOauthService(client, name)
+	oauthService, err := createOauthService(client, name)
 	if err != nil {
 		return fmt.Errorf("failed to create Oauth server service: %v", err)
 	}
-	log.Infof("Created Oauth server service with NodePort: %d", oauthNodePort)
-
-	// Fetch AWS cloud data
-	aws, err := NewAWSHelper(awsKey, awsSecretKey, region, infraName)
-	if err != nil {
-		return fmt.Errorf("cannot create an AWS client: %v", err)
-	}
-
-	lbInfo, err := aws.LoadBalancerInfo(machineNames)
-	if err != nil {
-		return fmt.Errorf("cannot get load balancer info: %v", err)
-	}
-	log.Infof("Using VPC: %s, Zone: %s, Subnet: %s", lbInfo.VPC, lbInfo.Zone, lbInfo.Subnet)
-
-	machineID, machineIP, err := getMachineInfo(dynamicClient, machineNames, fmt.Sprintf("%s-worker-%s", infraName, lbInfo.Zone))
-	if err != nil {
-		return fmt.Errorf("cannot get machine info: %v", err)
-	}
-	log.Infof("Using management machine with ID: %s and IP: %s", machineID, machineIP)
-
-	apiLBName := generateLBResourceName(infraName, name, "api")
-	apiAllocID, apiPublicIP, err := aws.EnsureEIP(apiLBName)
-	if err != nil {
-		return fmt.Errorf("cannot allocate API load balancer EIP: %v", err)
-	}
-	log.Infof("Allocated EIP with ID: %s, and IP: %s", apiAllocID, apiPublicIP)
-
-	apiLBARN, apiLBDNS, err := aws.EnsureNLB(apiLBName, lbInfo.Subnet, apiAllocID)
-	if err != nil {
-		return fmt.Errorf("cannot create network load balancer: %v", err)
-	}
-	log.Infof("Created API load balancer with ARN: %s, DNS: %s", apiLBARN, apiLBDNS)
-
-	apiTGARN, err := aws.EnsureTargetGroup(lbInfo.VPC, apiLBName, apiNodePort)
-	if err != nil {
-		return fmt.Errorf("cannot create API target group: %v", err)
-	}
-	log.Infof("Created API target group ARN: %s", apiTGARN)
-
-	oauthTGName := generateLBResourceName(infraName, name, "oauth")
-	oauthTGARN, err := aws.EnsureTargetGroup(lbInfo.VPC, oauthTGName, oauthNodePort)
-	if err != nil {
-		return fmt.Errorf("cannot create OAuth target group: %v", err)
-	}
-
-	if err = aws.EnsureTarget(apiTGARN, machineIP); err != nil {
-		return fmt.Errorf("cannot create API load balancer target: %v", err)
-	}
-	log.Infof("Created API load balancer target to %s", machineIP)
-
-	if err = aws.EnsureTarget(oauthTGARN, machineIP); err != nil {
-		return fmt.Errorf("cannot create OAuth load balancer target: %v", err)
-	}
-	log.Infof("Created OAuth load balancer target to %s", machineIP)
-
-	err = aws.EnsureListener(apiLBARN, apiTGARN, 6443, false)
-	if err != nil {
-		return fmt.Errorf("cannot create API listener: %v", err)
-	}
-	log.Infof("Created API load balancer listener")
-
-	err = aws.EnsureListener(apiLBARN, oauthTGARN, externalOauthPort, false)
-	if err != nil {
-		return fmt.Errorf("cannot create OAuth listener: %v", err)
-	}
-	log.Infof("Created OAuth load balancer listener")
-
-	apiDNSName := fmt.Sprintf("api.%s.%s", name, parentDomain)
-	err = aws.EnsureCNameRecord(dnsZoneID, apiDNSName, apiLBDNS)
-	if err != nil {
-		return fmt.Errorf("cannot create API DNS record: %v", err)
-	}
-	log.Infof("Created DNS record for API name: %s", apiDNSName)
-
-	routerLBName := generateLBResourceName(infraName, name, "apps")
-	routerLBARN, routerLBDNS, err := aws.EnsureNLB(routerLBName, lbInfo.Subnet, "")
-	if err != nil {
-		return fmt.Errorf("cannot create router load balancer: %v", err)
-	}
-	log.Infof("Created router load balancer with ARN: %s, DNS: %s", routerLBARN, routerLBDNS)
-
-	routerHTTPTGName := generateLBResourceName(infraName, name, "http")
-	routerHTTPARN, err := aws.EnsureTargetGroup(lbInfo.VPC, routerHTTPTGName, routerNodePortHTTP)
-	if err != nil {
-		return fmt.Errorf("cannot create router HTTP target group: %v", err)
-	}
-	log.Infof("Created router HTTP target group ARN: %s", routerHTTPARN)
-
-	err = aws.EnsureListener(routerLBARN, routerHTTPARN, 80, false)
-	if err != nil {
-		return fmt.Errorf("cannot create router HTTP listener: %v", err)
-	}
-	log.Infof("Created router HTTP load balancer listener")
-
-	routerHTTPSTGName := generateLBResourceName(infraName, name, "https")
-	routerHTTPSARN, err := aws.EnsureTargetGroup(lbInfo.VPC, routerHTTPSTGName, routerNodePortHTTPS)
-	if err != nil {
-		return fmt.Errorf("cannot create router HTTPS target group: %v", err)
-	}
-	log.Infof("Created router HTTPS target group ARN: %s", routerHTTPSARN)
-
-	err = aws.EnsureListener(routerLBARN, routerHTTPSARN, 443, false)
-	if err != nil {
-		return fmt.Errorf("cannot create router HTTPS listener: %v", err)
-	}
-	log.Infof("Created router HTTPS load balancer listener")
-
-	routerDNSName := fmt.Sprintf("*.apps.%s.%s", name, parentDomain)
-	err = aws.EnsureCNameRecord(dnsZoneID, routerDNSName, routerLBDNS)
-	if err != nil {
-		return fmt.Errorf("cannot create router DNS record: %v", err)
-	}
-	log.Infof("Created DNS record for router name: %s", routerDNSName)
-
-	vpnLBName := generateLBResourceName(infraName, name, "vpn")
-	vpnLBARN, vpnLBDNS, err := aws.EnsureNLB(vpnLBName, lbInfo.Subnet, "")
-	if err != nil {
-		return fmt.Errorf("cannot create vpn load balancer: %v", err)
-	}
-	log.Infof("Created VPN load balancer with ARN: %s and DNS: %s", vpnLBARN, vpnLBDNS)
-
-	vpnTGARN, err := aws.EnsureUDPTargetGroup(lbInfo.VPC, vpnLBName, vpnNodePort, apiNodePort)
-	if err != nil {
-		return fmt.Errorf("cannot create VPN target group: %v", err)
-	}
-	log.Infof("Created VPN target group ARN: %s", vpnTGARN)
-
-	if err = aws.EnsureTarget(vpnTGARN, machineID); err != nil {
-		return fmt.Errorf("cannot create VPN load balancer target: %v", err)
-	}
-	log.Infof("Created VPN load balancer target to %s", machineID)
-
-	err = aws.EnsureListener(vpnLBARN, vpnTGARN, 1194, true)
-	if err != nil {
-		return fmt.Errorf("cannot create VPN listener: %v", err)
-	}
-	log.Infof("Created VPN load balancer listener")
-
-	vpnDNSName := fmt.Sprintf("vpn.%s.%s", name, parentDomain)
-	err = aws.EnsureCNameRecord(dnsZoneID, vpnDNSName, vpnLBDNS)
-	if err != nil {
-		return fmt.Errorf("cannot create router DNS record: %v", err)
-	}
-	log.Infof("Created DNS record for VPN: %s", vpnDNSName)
-
-	err = aws.EnsureWorkersAllowNodePortAccess()
-	if err != nil {
-		return fmt.Errorf("cannot setup security group for worker nodes: %v", err)
-	}
-	log.Infof("Ensured that node ports on workers are accessible")
+	log.Infof("Created Oauth server service %s/%s", oauthService.Namespace, oauthService.Name)
 
 	_, serviceCIDRNet, err := net.ParseCIDR(serviceCIDR)
 	if err != nil {
@@ -360,6 +187,15 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 		return fmt.Errorf("cluster pod CIDR exceeds max address space")
 	}
 
+	apiAddress, err := waitForLoadBalancerIngress(client, apiService)
+	if err != nil {
+		return fmt.Errorf("did not get an API service load balancer address")
+	}
+	vpnDNSName, err := waitForLoadBalancerIngress(client, vpnService)
+	if err != nil {
+		return fmt.Errorf("did not get a VPN service load balanceer address")
+	}
+
 	params := api.NewClusterParams()
 	params.Namespace = name
 	params.ExternalAPIDNSName = apiDNSName
@@ -373,7 +209,7 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 	params.PodCIDR = clusterPodCIDR.String()
 	params.ReleaseImage = releaseImage
 	params.IngressSubdomain = fmt.Sprintf("apps.%s.%s", name, parentDomain)
-	params.OpenShiftAPIClusterIP = openshiftClusterIP
+	params.OpenShiftAPIClusterIP = openshiftService.Spec.ClusterIP
 	params.OpenVPNNodePort = fmt.Sprintf("%d", vpnNodePort)
 	params.BaseDomain = fmt.Sprintf("%s.%s", name, parentDomain)
 	params.CloudProvider = "AWS"
@@ -381,9 +217,7 @@ func InstallCluster(name, releaseImage, dhParamsFile string, waitForReady bool) 
 	params.EtcdClientName = "etcd-client"
 	params.NetworkType = "OpenShiftSDN"
 	params.ImageRegistryHTTPSecret = generateImageRegistrySecret()
-	params.RouterNodePortHTTP = fmt.Sprintf("%d", routerNodePortHTTP)
-	params.RouterNodePortHTTPS = fmt.Sprintf("%d", routerNodePortHTTPS)
-	params.RouterServiceType = "NodePort"
+	params.RouterServiceType = "ClusterIP"
 	params.Replicas = "1"
 
 	workingDir, err := ioutil.TempDir("", "")
@@ -564,11 +398,11 @@ func createBrandingSecret(client kubeclient.Interface, namespace, fileName strin
 	return err
 }
 
-func createKubeAPIServerService(client kubeclient.Interface, namespace string) (int, error) {
+func createKubeAPIServerService(client kubeclient.Interface, namespace string) (*corev1.Service, error) {
 	svc := &corev1.Service{}
 	svc.Name = "kube-apiserver"
 	svc.Spec.Selector = map[string]string{"app": "kube-apiserver"}
-	svc.Spec.Type = corev1.ServiceTypeNodePort
+	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
 	svc.Spec.Ports = []corev1.ServicePort{
 		{
 			Port:       6443,
@@ -576,33 +410,25 @@ func createKubeAPIServerService(client kubeclient.Interface, namespace string) (
 			TargetPort: intstr.FromInt(6443),
 		},
 	}
-	svc, err := client.CoreV1().Services(namespace).Create(svc)
-	if err != nil {
-		return 0, err
-	}
-	return int(svc.Spec.Ports[0].NodePort), nil
+	return client.CoreV1().Services(namespace).Create(svc)
 }
 
-func createVPNServerService(client kubeclient.Interface, namespace string) (int, error) {
+func createVPNServerService(client kubeclient.Interface, namespace string) (*corev1.Service, error) {
 	svc := &corev1.Service{}
 	svc.Name = "openvpn-server"
 	svc.Spec.Selector = map[string]string{"app": "openvpn-server"}
-	svc.Spec.Type = corev1.ServiceTypeNodePort
+	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
 	svc.Spec.Ports = []corev1.ServicePort{
 		{
 			Port:       1194,
-			Protocol:   corev1.ProtocolUDP,
+			Protocol:   corev1.ProtocolTCP,
 			TargetPort: intstr.FromInt(1194),
 		},
 	}
-	svc, err := client.CoreV1().Services(namespace).Create(svc)
-	if err != nil {
-		return 0, err
-	}
-	return int(svc.Spec.Ports[0].NodePort), nil
+	return client.CoreV1().Services(namespace).Create(svc)
 }
 
-func createOpenshiftService(client kubeclient.Interface, namespace string) (string, error) {
+func createOpenshiftService(client kubeclient.Interface, namespace string) (*corev1.Service, error) {
 	svc := &corev1.Service{}
 	svc.Name = "openshift-apiserver"
 	svc.Spec.Selector = map[string]string{"app": "openshift-apiserver"}
@@ -615,18 +441,14 @@ func createOpenshiftService(client kubeclient.Interface, namespace string) (stri
 			TargetPort: intstr.FromInt(8443),
 		},
 	}
-	svc, err := client.CoreV1().Services(namespace).Create(svc)
-	if err != nil {
-		return "", err
-	}
-	return svc.Spec.ClusterIP, nil
+	return client.CoreV1().Services(namespace).Create(svc)
 }
 
-func createOauthService(client kubeclient.Interface, namespace string) (int, error) {
+func createOauthService(client kubeclient.Interface, namespace string) (*corev1.Service, error) {
 	svc := &corev1.Service{}
 	svc.Name = "oauth-openshift"
 	svc.Spec.Selector = map[string]string{"app": "oauth-openshift"}
-	svc.Spec.Type = corev1.ServiceTypeNodePort
+	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
 	svc.Spec.Ports = []corev1.ServicePort{
 		{
 			Name:       "https",
@@ -635,11 +457,7 @@ func createOauthService(client kubeclient.Interface, namespace string) (int, err
 			TargetPort: intstr.FromInt(6443),
 		},
 	}
-	svc, err := client.CoreV1().Services(namespace).Create(svc)
-	if err != nil {
-		return 0, err
-	}
-	return int(svc.Spec.Ports[0].NodePort), nil
+	return client.CoreV1().Services(namespace).Create(svc)
 }
 
 func createPullSecret(client kubeclient.Interface, namespace, data string) error {

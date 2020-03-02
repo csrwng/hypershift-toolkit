@@ -4,18 +4,18 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
-	"github.com/openshift/hypershift-toolkit/contrib/pkg/aws"
+	"github.com/openshift/hypershift-toolkit/contrib/pkg/generic"
 )
 
 func main() {
-	rootCmd := newHypershiftAWSCommand()
+	rootCmd := newInstallCommand()
 	rootCmd.Execute()
 }
 
-func newHypershiftAWSCommand() *cobra.Command {
+func newHypershiftInstaller() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "hypershift-aws",
-		Short: "An AWS implementation of the Hypershift pattern",
+		Use:   "hypershift-installer",
+		Short: "A generic implementation of the Hypershift pattern",
 	}
 	cmd.AddCommand(newInstallCommand())
 	cmd.AddCommand(newUninstallCommand())
@@ -28,7 +28,7 @@ func newInstallCommand() *cobra.Command {
 	waitForClusterReady := true
 	cmd := &cobra.Command{
 		Use:   "install NAME",
-		Short: "Creates the necessary infrastructure and installs a hypershift instance on an existing OCP 4 cluster running on AWS",
+		Short: "Creates the necessary infrastructure and installs a hypershift instance on an existing OCP 4 cluster",
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) != 1 {
 				log.Fatalf("You must specify the name of the cluster you want to install")
@@ -37,7 +37,7 @@ func newInstallCommand() *cobra.Command {
 			if len(name) == 0 {
 				log.Fatalf("You must specify the name of the cluster you want to install")
 			}
-			if err := aws.InstallCluster(name, releaseImage, dhParamsFile, waitForClusterReady); err != nil {
+			if err := generic.InstallCluster(name, releaseImage, dhParamsFile, waitForClusterReady); err != nil {
 				log.WithError(err).Fatalf("Failed to install cluster")
 			}
 		},
@@ -51,13 +51,13 @@ func newInstallCommand() *cobra.Command {
 func newUninstallCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "uninstall NAME",
-		Short: "Removes artifacts from an existing hypershift instance on an AWS cluster",
+		Short: "Removes artifacts from an existing hypershift instance",
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) != 1 || len(args[0]) == 0 {
 				log.Fatalf("You must specify the name of the cluster you want to uninstall")
 			}
 			name := args[0]
-			if err := aws.UninstallCluster(name); err != nil {
+			if err := generic.UninstallCluster(name); err != nil {
 				log.WithError(err).Fatalf("Failed to uninstall cluster")
 			}
 		},

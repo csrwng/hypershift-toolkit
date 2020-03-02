@@ -1,4 +1,4 @@
-package aws
+package generic
 
 import (
 	"context"
@@ -25,11 +25,44 @@ import (
 )
 
 const (
+	loadBalancerIngressTimeout   = 10 * time.Minute
 	apiEndpointTimeout           = 10 * time.Minute
 	nodesReadyTimeout            = 10 * time.Minute
 	bootstrapPodCompleteTimeout  = 5 * time.Minute
 	clusterOperatorsReadyTimeout = 15 * time.Minute
 )
+
+func waitForLoadBalancerIngress(client kubeclient.Interface, targetService *corev1.Service) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), loadBalancerIngressTimeout)
+	defer cancel()
+	listWatcher := cache.NewListWatchFromClient(client.CoreV1().RESTClient(), "services", targetService.Namespace, fields.Everything())
+
+	address := ""
+	serviceHasIngress := func(event watch.Event) (bool, error) {
+		svc, ok := event.Object.(*corev1.Service)
+		if !ok {
+			return false, nil
+		}
+		if svc.Name != targetService.Name {
+			return false, nil
+		}
+
+		if len(svc.Status.LoadBalancer.Ingress) == 0 {
+			return false, nil
+		}
+
+		address = svc.Status.LoadBalancer.Ingress[0].Hostname
+		if len(address) == 0 {
+			address = svc.Status.LoadBalancer.Ingress[0].IP
+		}
+		if len(address) == 0 {
+			return false, nil
+		}
+		return true, nil
+	}
+	_, err := clientwatch.UntilWithSync(ctx, listWatcher, &corev1.Service{}, nil, serviceHasIngress)
+	return address, err
+}
 
 func waitForAPIEndpoint(pkiDir, apiDNSName string) error {
 	caCertBytes, err := ioutil.ReadFile(filepath.Join(pkiDir, "root-ca.crt"))

@@ -8,9 +8,9 @@ default: build
 build:  bindata control-plane-operator
 	go build -o bin/hypershift github.com/openshift/hypershift-toolkit/cmd/hypershift
 
-.PHONY: hypershift-aws
-hypershift-aws: bindata
-	go build -o bin/hypershift-aws github.com/openshift/hypershift-toolkit/contrib/cmd/hypershift-aws
+.PHONY: hypershift-installer
+hypershift-installer: bindata
+	go build -o bin/hypershift-installer github.com/openshift/hypershift-toolkit/contrib/cmd/hypershift-installer
 
 .PHONY: bindata
 bindata:
